@@ -1,0 +1,77 @@
+import time
+import board
+import adafruit_dht
+import statistics
+
+# ==========================================
+# 硬件配置：如果你使用的是 GPIO 4，请保持 board.D4
+# ==========================================
+dht_device = adafruit_dht.DHT11(board.D4)
+
+# 测试记录变量
+HUMI_THRESHOLD = 65  # 判定为“呼吸动作”的起始湿度（运行后根据输出微调）
+breath_timestamps = []
+humi_history = []
+temp_history = []
+
+print("--- The Breathing Reef: 传感器基准测试启动 ---")
+print("测试目标：确定环境背景值 vs 呼气峰值")
+print("操作建议：请先静坐 10 秒，然后对着传感器深呼吸几口...\n")
+
+try:
+    while True:
+        try:
+            # 读取传感器数值
+            t = dht_device.temperature
+            h = dht_device.humidity
+            
+            if h is not None and t is not None:
+                humi_history.append(h)
+                temp_history.append(t)
+                
+                # 保持最近 50 次的数据用于计算平均值
+                if len(humi_history) > 50:
+                    humi_history.pop(0)
+                
+                # 计算实时统计数据
+                avg_humi = statistics.mean(humi_history)
+                
+                # 状态判定
+                status = " >> [正在呼气!]" if h > HUMI_THRESHOLD else " [环境态]"
+                
+                # 格式化输出
+                print(f"温度: {t}°C | 湿度: {h}% | 实时均湿: {avg_humi:.1f}% {status}")
+
+                # 识别呼吸频率 (检测两次呼气峰值的时间差)
+                if h > HUMI_THRESHOLD:
+                    current_time = time.time()
+                    # 只有当距离上次检测超过 2 秒时，才计为一次新的呼吸
+                    if not breath_timestamps or (current_time - breath_timestamps[-1] > 2):
+                        breath_timestamps.append(current_time)
+                        if len(breath_timestamps) >= 2:
+                            interval = breath_timestamps[-1] - breath_timestamps[-2]
+                            print(f"   [检测到呼吸节律] 距上次间隔: {interval:.2f}s")
+
+            # DHT11 读取速度受限，建议设置为 0.8s - 1s
+            time.sleep(0.8)
+
+        except RuntimeError as error:
+            # DHT11 经常会发生读取错误（Checksum error），直接跳过即可
+            continue
+        except Exception as error:
+            dht_device.exit()
+            raise error
+
+except KeyboardInterrupt:
+    print("\n--- 测试分析报告 ---")
+    if humi_history:
+        print(f"室内/环境平均湿度: {min(humi_history)}% - {max(humi_history)}%")
+        print(f"室内/环境平均温度: {min(temp_history)}°C - {max(temp_history)}°C")
+    
+    if len(breath_timestamps) >= 2:
+        intervals = [breath_timestamps[i] - breath_timestamps[i-1] for i in range(1, len(breath_timestamps))]
+        avg_int = statistics.mean(intervals)
+        print(f"平均呼吸周期 (RR Interval): {avg_int:.2f}s")
+        print(f"呼吸稳定性 (标准差): {statistics.stdev(intervals):.2f}")
+    else:
+        print("未能捕捉到足够的呼吸周期，请尝试离传感器更近一些。")
