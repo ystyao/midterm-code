@@ -2,26 +2,58 @@ import time
 import board
 import adafruit_dht
 import statistics
+import digitalio
 
 # ==========================================
-# 硬件配置：如果你使用的是 GPIO 4，请保持 board.D4
+# Hardware Setup
 # ==========================================
+# 1. DHT11 Temperature & Humidity Sensor -> GPIO 4
 dht_device = adafruit_dht.DHT11(board.D4)
 
-# 测试记录变量
-HUMI_THRESHOLD = 65  # 判定为“呼吸动作”的起始湿度（运行后根据输出微调）
+# 2. Visual Feedback: LED Indicator -> GPIO 17
+led = digitalio.DigitalInOut(board.D17)
+led.direction = digitalio.Direction.OUTPUT
+
+# 3. Auditory Feedback: Active Buzzer -> GPIO 27
+buzzer = digitalio.DigitalInOut(board.D27)
+buzzer.direction = digitalio.Direction.OUTPUT
+
+# ==========================================
+# Variables & Thresholds
+# ==========================================
+# Replaced hardcoded threshold with dynamic sensitivity
+HUMI_SENSITIVITY = 6.0           # Trigger exhale if humidity is 6.0% above the moving average
+FAST_BREATH_WARNING_LIMIT = 3.0  # Alert if breathing interval is less than 3.0 seconds (hyperventilation)
+
 breath_timestamps = []
 humi_history = []
 temp_history = []
 
-print("--- The Breathing Reef: 传感器基准测试启动 ---")
-print("测试目标：确定环境背景值 vs 呼气峰值")
-print("操作建议：请先静坐 10 秒，然后对着传感器深呼吸几口...\n")
+# Extended Data Dimensions:
+humi_delta_history = []  # Rate of Change (Delta H)
+exhale_durations = []    # Duration of each sustained exhale
+
+print("--- The Breathing Reef: Biofeedback System Initializing ---")
+print("Features: Dynamic Environment Calibration | Multi-dimensional Data | A/V Feedback")
+print("Instruction: Please sit quietly for 10-15 seconds to establish a baseline, then take a few deep breaths...\n")
+
+# Helper function: Short double-beep for warning
+def trigger_warning_beep():
+    buzzer.value = True
+    time.sleep(0.2)
+    buzzer.value = False
+    time.sleep(0.1)
+    buzzer.value = True
+    time.sleep(0.2)
+    buzzer.value = False
 
 try:
+    is_exhaling = False
+    exhale_start_time = 0
+
     while True:
         try:
-            # 读取传感器数值
+            # Read from DHT11
             t = dht_device.temperature
             h = dht_device.humidity
             
@@ -29,49 +61,93 @@ try:
                 humi_history.append(h)
                 temp_history.append(t)
                 
-                # 保持最近 50 次的数据用于计算平均值
+                # Calculate Humidity Rate of Change (Delta H)
+                delta_h = 0
+                if len(humi_history) > 1:
+                    delta_h = humi_history[-1] - humi_history[-2]
+                humi_delta_history.append(delta_h)
+                
+                # Keep the last 50 readings to calculate a moving baseline
                 if len(humi_history) > 50:
                     humi_history.pop(0)
+                    humi_delta_history.pop(0)
+                    temp_history.pop(0)
                 
-                # 计算实时统计数据
+                # Calculate the moving average baseline
                 avg_humi = statistics.mean(humi_history)
                 
-                # 状态判定
-                status = " >> [正在呼气!]" if h > HUMI_THRESHOLD else " [环境态]"
+                # Dynamic Threshold Calculation
+                dynamic_threshold = avg_humi + HUMI_SENSITIVITY
                 
-                # 格式化输出
-                print(f"温度: {t}°C | 湿度: {h}% | 实时均湿: {avg_humi:.1f}% {status}")
+                # ==========================================
+                # Interaction Logic & State Detection
+                # ==========================================
+                # Condition: Current humidity exceeds dynamic threshold OR sudden spike in humidity
+                if h > dynamic_threshold or delta_h > 2.0:  
+                    # State: User is exhaling
+                    led.value = True  # Positive visual feedback (Light follows the breath)
+                    status = f" >> [EXHALING! - LED ON] (Threshold: {dynamic_threshold:.1f}%)"
+                    
+                    if not is_exhaling:
+                        is_exhaling = True
+                        exhale_start_time = time.time()
+                        
+                        current_time = time.time()
+                        # Debounce: Ensure at least 2 seconds between valid breath detections
+                        if not breath_timestamps or (current_time - breath_timestamps[-1] > 2):
+                            breath_timestamps.append(current_time)
+                            
+                            # Check breathing rhythm (RR Interval)
+                            if len(breath_timestamps) >= 2:
+                                interval = breath_timestamps[-1] - breath_timestamps[-2]
+                                print(f"   [Breath Rhythm Detected] Interval: {interval:.2f}s")
+                                
+                                # Trigger buzzer if breathing is too fast
+                                if interval < FAST_BREATH_WARNING_LIMIT:
+                                    print("   [!] WARNING: Breathing too fast. Please slow down! (Buzzer Beeping)")
+                                    trigger_warning_beep()
+                else:
+                    # State: Ambient / Inhaling
+                    led.value = False 
+                    status = " [Ambient / Inhaling - LED OFF]"
+                    
+                    if is_exhaling:
+                        # User just finished an exhale, calculate and log the duration
+                        is_exhaling = False
+                        duration = time.time() - exhale_start_time
+                        exhale_durations.append(duration)
+                        print(f"   [+] Exhale duration logged: {duration:.2f}s")
 
-                # 识别呼吸频率 (检测两次呼气峰值的时间差)
-                if h > HUMI_THRESHOLD:
-                    current_time = time.time()
-                    # 只有当距离上次检测超过 2 秒时，才计为一次新的呼吸
-                    if not breath_timestamps or (current_time - breath_timestamps[-1] > 2):
-                        breath_timestamps.append(current_time)
-                        if len(breath_timestamps) >= 2:
-                            interval = breath_timestamps[-1] - breath_timestamps[-2]
-                            print(f"   [检测到呼吸节律] 距上次间隔: {interval:.2f}s")
+                # Formatted Real-time Console Output
+                print(f"Temp: {t}°C | Humidity: {h}% | Delta H: {delta_h:+.1f} | Baseline: {avg_humi:.1f}% {status}")
 
-            # DHT11 读取速度受限，建议设置为 0.8s - 1s
+            # Polling delay: DHT11 hardware limit is ~1Hz
             time.sleep(0.8)
 
         except RuntimeError as error:
-            # DHT11 经常会发生读取错误（Checksum error），直接跳过即可
+            # DHT11 sensors often throw checksum errors; skip to the next reading
             continue
         except Exception as error:
             dht_device.exit()
+            led.value = False
+            buzzer.value = False
             raise error
 
 except KeyboardInterrupt:
-    print("\n--- 测试分析报告 ---")
+    # Graceful exit and data summary
+    print("\n--- The Breathing Reef: Session Data Summary ---")
+    led.value = False
+    buzzer.value = False
+    
     if humi_history:
-        print(f"室内/环境平均湿度: {min(humi_history)}% - {max(humi_history)}%")
-        print(f"室内/环境平均温度: {min(temp_history)}°C - {max(temp_history)}°C")
+        print(f"Ambient Humidity Range: {min(humi_history)}% - {max(humi_history)}%")
     
     if len(breath_timestamps) >= 2:
         intervals = [breath_timestamps[i] - breath_timestamps[i-1] for i in range(1, len(breath_timestamps))]
         avg_int = statistics.mean(intervals)
-        print(f"平均呼吸周期 (RR Interval): {avg_int:.2f}s")
-        print(f"呼吸稳定性 (标准差): {statistics.stdev(intervals):.2f}")
-    else:
-        print("未能捕捉到足够的呼吸周期，请尝试离传感器更近一些。")
+        print(f"Average Breathing Cycle (RR Interval): {avg_int:.2f}s")
+    
+    if exhale_durations:
+        print(f"Average Exhale Duration: {statistics.mean(exhale_durations):.2f}s")
+        
+    print("Log Complete: Tracked Temperature, Absolute Humidity, Delta H, Respiration Interval, and Exhale Duration.")

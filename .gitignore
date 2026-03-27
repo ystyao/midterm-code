@@ -1,0 +1,15 @@
+# macOS 系统垃圾文件
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python 编译缓存和虚拟环境
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env/
+env/
+
+# 你的本地测试数据（可选：如果你不想把测试的 log 传上去，可以取消下面这行的注释）
+# data_logs/*.csv

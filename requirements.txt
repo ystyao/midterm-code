@@ -1,0 +1,6 @@
+# The Breathing Reef - Hardware Dependencies
+
+adafruit-circuitpython-dht==3.2.0
+Adafruit-Blinka==8.38.0
+RPi.GPIO==0.7.1
+RPLCD==1.3.1
